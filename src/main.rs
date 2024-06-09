@@ -1,9 +1,7 @@
-use std::io::{self, BufRead};
 use regex::Regex;
-use std::sync::mpsc::{channel, Sender};
-use std::thread;
+use std::io::{self, BufRead};
 
-const DELIMITER_2: &str = r"[!\?。！？…]";
+const DELIMITER: &str = r"[\.!\?．。！？…]";
 const CLOSING_QUOTATION: &str = r"[\)）」』】］〕〉》\]]";
 const ALPHANUMERICS: &str = r"[\d０-９a-zA-Zａ-ｚＡ-Ｚ]";
 
@@ -11,102 +9,82 @@ fn main() {
     let stdin = io::stdin();
     let handle = stdin.lock();
 
-    let delimiter_re = Regex::new(DELIMITER_2).unwrap();
+    let delimiter_re = Regex::new(DELIMITER).unwrap();
     let closing_quotation_re = Regex::new(CLOSING_QUOTATION).unwrap();
     let alphanumerics_re = Regex::new(ALPHANUMERICS).unwrap();
 
-    let (sender, receiver) = channel();
+    let mut local_sentence = String::new();
+    let mut char_buffer = Vec::new(); // Buffer to store the last three characters
 
-    let thread_count = 4; // Adjust based on your system
-    let mut handles = Vec::new();
-
-    // Reading input in the main thread
-    let mut input = String::new();
     for line in handle.lines() {
         let line = line.unwrap();
-        input.push_str(&line);
-        input.push('\n');
-    }
+        let mut char_iter = line.chars().peekable();
 
-    // Split input into chunks
-    let chunk_size = (input.len() / thread_count) + 1;
-    let input_chunks: Vec<String> = input
-        .chars()
-        .collect::<Vec<_>>()
-        .chunks(chunk_size)
-        .map(|chunk| chunk.iter().collect())
-        .collect();
+        while let Some(c) = char_iter.next() {
+            if char_buffer.len() >= 2 {
+                char_buffer.remove(0); // Maintain a buffer of last 3 characters
+            }
+            char_buffer.push(c);
 
-    for (index, chunk) in input_chunks.into_iter().enumerate() {
-        let sender = sender.clone();
-        let delimiter_re = delimiter_re.clone();
-        let closing_quotation_re = closing_quotation_re.clone();
-        let alphanumerics_re = alphanumerics_re.clone();
+            local_sentence.push(c);
 
-        let handle = thread::spawn(move || {
-            process_chunk(chunk, index, sender, &delimiter_re, &closing_quotation_re, &alphanumerics_re);
-        });
-        handles.push(handle);
-    }
+            if delimiter_re.is_match(&c.to_string()) {
+                let z = char_buffer.get(0);
+                let y = char_buffer.get(1);
+                let x = char_iter.peek();
 
-    drop(sender);
+                // Determine whether to split or not
+                let should_split = match (z, y, x) {
+                    // Example: "...|z |y |x |..."
+                    // Delimiter followed by another delimiter
+                    (Some(&z), Some(&y), Some(&x)) => {
+                        // Repeated delimiter, so skip until next iteration
+                        if delimiter_re.is_match(&x.to_string()) {
+                            false
+                        } else if y == '。' {
+                            true
+                        // Example: "...|る|。|）|と言った"
+                        // Delimiter followed by closing quotation mark
+                        } else if closing_quotation_re.is_match(&x.to_string()) {
+                            false
+                        // Example: "mpl|e |. |c |om/"
+                        // Never split between alphanumeric characters unless the delimiter is "。"
+                        } else if alphanumerics_re.is_match(&z.to_string())
+                            && alphanumerics_re.is_match(&x.to_string())
+                            && y != '。'
+                        {
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    // Handle the case where `x` is None (end of line)
+                    (Some(&_z), Some(&y), None) => {
+                        if y == '。' {
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => true,
+                };
 
-    let mut results = Vec::new();
-    for (index, sentences) in receiver {
-        results.push((index, sentences));
-    }
-
-    results.sort_by_key(|&(index, _)| index);
-
-    for (_, sentences) in results {
-        for sentence in sentences {
-            println!("{}", sentence);
+                if should_split {
+                    println!("{}", local_sentence.trim());
+                    local_sentence.clear();
+                }
+            }
         }
-    }
 
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-fn process_chunk(chunk: String, index: usize, sender: Sender<(usize, Vec<String>)>, delimiter_re: &Regex, closing_quotation_re: &Regex, alphanumerics_re: &Regex) {
-    let mut local_sentence = String::new();
-    let mut sentences = Vec::new();
-
-    let mut char_iter = chunk.chars().peekable();
-
-    while let Some(c) = char_iter.next() {
-        local_sentence.push(c);
-
-        if delimiter_re.is_match(&c.to_string()) {
-            while let Some(&next_char) = char_iter.peek() {
-                if delimiter_re.is_match(&next_char.to_string()) {
-                    local_sentence.push(next_char);
-                    char_iter.next();
-                } else {
-                    break;
-                }
-            }
-
-            if let Some(last_char) = local_sentence.chars().rev().nth(1) {
-                if alphanumerics_re.is_match(&last_char.to_string()) {
-                    continue;
-                }
-                if closing_quotation_re.is_match(&last_char.to_string()) {
-                    continue;
-                }
-            }
-
-            if !local_sentence.trim().is_empty() {
-                sentences.push(local_sentence.clone());
-            }
+        // Treat newline as a sentence boundary
+        if !local_sentence.trim().is_empty() {
+            println!("{}", local_sentence.trim());
             local_sentence.clear();
         }
     }
 
+    // Print any remaining sentence
     if !local_sentence.trim().is_empty() {
-        sentences.push(local_sentence);
+        println!("{}", local_sentence.trim());
     }
-
-    sender.send((index, sentences)).unwrap();
 }
